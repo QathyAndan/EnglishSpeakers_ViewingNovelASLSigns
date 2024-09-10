@@ -1,0 +1,1063 @@
+---
+title: "Eye Tracking Analyses"
+author: "Qathy Andan, re-purposed for dissertation work from script initially written by Inderdeep Sangh in 2018 in service of analyzing my master's project"
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+output:
+  word_document: default
+  pdf_document: default
+---
+```{r setup, include=FALSE}
+setwd("C:/Users/qathy/OneDrive/Documents/Matlab_and_R/analysis_files")
+knitr::opts_chunk$set(echo = TRUE, fig.path='/Figs/')
+rm(list = ls())
+
+len<-length
+
+count <- function(x) { 
+  length(na.omit(x)) 
+}
+
+
+round_df <- function(x, digits) {
+    # round all numeric variables
+    # x: data frame 
+    # digits: number of digits to round
+    numeric_columns <- sapply(x, mode) == 'numeric'
+    x[numeric_columns] <-  round(x[numeric_columns], digits)
+    x
+}
+
+
+# install.packages("BayesFactor")
+# install.packages("extrafont")
+# install.packages("zoo")
+library(BayesFactor)
+library(extrafont)
+library("zoo")
+library("Matrix")
+library("lme4")
+library("lmerTest")
+library("ggplot2")
+library("eyetrackingR")
+library("readxl")
+library("writexl")
+
+```
+
+## Initial processing
+
+Load the data and choose the window size at 3s. Also set trackloss at 0.5 (it would be ok to use a more conservative thershold of say .25 but then about a 100 trials will be excluded - choose this number based on empirial understanding of the experiment)
+
+```{r, echo=FALSE}
+
+setwd("C:/Users/qathy/OneDrive/Documents/Matlab_and_R/analysis_files")
+
+
+
+
+
+# SPECIFY EXPERIMENT TO ANALYZE -------------------
+expNameList <- c("exp1",         #1 Words, phonology
+                 "exp2_Hom_all", #2 Words, morphology
+                 "exp2_Het_all", #3 Words, illicit control
+                "exp3",          #4 Signs, phonology
+                "exp4_Hom_all",  #5 Signs, morphology
+                "exp4_Het_all")  #6 Signs, illicit control
+
+expName <- expNameList[[1]] # change number according to above list
+trialVariable = "pair"
+
+if(expName=="exp1") {
+  # WORDS - Phonology condition
+  csvName <- "TrimmedRetimedData_Spoken Phonology_Phon_v1.9.xlsx"
+  prettyName <- "spoken phonology"
+  
+  # WORDS - Morphology conditions
+} else if(expName=="exp2_Hom_all"){
+  csvName <- "TrimmedRetimedData_spoken morphology_Hom_All_v1.9.xlsx"
+  prettyName <- "spoken morphology"
+} else if(expName=="exp2_Het_all"){
+  csvName <- "TrimmedRetimedData_spoken morphology_Het_All_v1.9.xlsx"
+  prettyName <- "spoken ILLICIT condition"
+  
+  # SIGNS - Phonology condition
+} else if(expName=="exp3"){
+  csvName <- "TrimmedRetimedData_Signed Phonology_Phon_v1.9.xlsx"
+  prettyName <- "signed phonology"
+  
+  # SIGNS - Morphology conditions
+} else if(expName=="exp4_Hom_all"){
+  csvName <- "TrimmedRetimedData_signed morphology_Hom_All_v1.9.xlsx"
+  prettyName <- "signed morphology"
+} else if(expName=="exp4_Het_all"){
+  csvName <- "TrimmedRetimedData_signed morphology_Het_All_v1.9.xlsx"
+  prettyName <- "signed ILLICIT condition"
+}
+# if(trialVariable == "trial"){
+#   names(dat)[names(dat) == "trial"] <- "pair"
+# }
+
+# ANALYSIS-----------------------------------
+
+dat <- readxl::read_xlsx(csvName)
+dat$left_Type <- dat$targetSide == 1
+dat$right_Type <- dat$targetSide == 2
+
+# datPre_Left <- make_eyetrackingr_data(dat, participant_column = "subID", trial_column = "pair", aoi_columns = c("left", "right", "other"),time_column = "time",item_column = "trial",trackloss_column = "trackloss", treat_non_aoi_looks_as_missing = TRUE)
+# # datPre <- make_eyetrackingr_data(dat, participant_column = "subID", trial_column = "pair", aoi_columns = c("left", "right", "other"),time_column = "time",item_column = "targetSide",trackloss_column = "trackloss", treat_non_aoi_looks_as_missing = TRUE)
+
+# datPre_Right <- make_eyetrackingr_data(dat, participant_column = "subID", trial_column = "pair", aoi_columns = c("left", "right", "other"),time_column = "time",item_column = "trial",trackloss_column = "trackloss", treat_non_aoi_looks_as_missing = TRUE)
+#                                  #block_column = "block",
+#                                  #sample_column = "sample",
+#                                  #order_column = "expOrder",
+#                                  #choice_columns = c("ltChoice", "lcChoice", "rtChoice", "rcChoice"),
+
+datPre_Left <- 
+  make_eyetrackingr_data(dat, 
+                         participant_column = "subID", 
+                         trial_column = "pair", 
+                         item_column = "trial",
+                         aoi_columns = c("left", "right", "other"),
+                         time_column = "time",
+                         trackloss_column = "trackloss", 
+                         treat_non_aoi_looks_as_missing = TRUE)
+
+datPre_Right <- 
+  make_eyetrackingr_data(dat, 
+                         participant_column = "subID", 
+                         trial_column = "pair", 
+                         item_column = "trial",
+                         aoi_columns = c("left", "right", "other"),
+                         time_column = "time",
+                         trackloss_column = "trackloss", 
+                         treat_non_aoi_looks_as_missing = TRUE)
+# 0 - 3s
+# subset to response window post word-onset
+response_window_Left <- subset_by_window(datPre_Left, 
+                                    window_start_time = 0, 
+                                    window_end_time = 5000, 
+                                    rezero = FALSE)
+response_window_Right <- subset_by_window(datPre_Right, 
+                                    window_start_time = 0, 
+                                    window_end_time = 5000, 
+                                    rezero = FALSE)
+timeBin <- 100 # time bin grain size = 100ms
+
+
+#remove trials with (> 25% of trackloss) - Qathy chose 50%
+response_window_clean_Left <- clean_by_trackloss(data = response_window_Left,
+                                            participant_prop_thresh = .9)
+trackloss_clean_Left <- trackloss_analysis(data = response_window_clean_Left)
+
+(trackloss_clean_subjects_Left <- unique(trackloss_clean_Left[, c('subID','TracklossForParticipant')]))
+# mean trackloss
+(meanLeftTrackloss <- mean(1-trackloss_clean_subjects_Left$TracklossForParticipant))
+(sdLeftTrackloss <- sd(1-trackloss_clean_subjects_Left$TracklossForParticipant))
+
+#----
+
+response_window_clean_Right <- clean_by_trackloss(data = response_window_Right,
+                                            participant_prop_thresh = .9)
+trackloss_clean_Right <- trackloss_analysis(data = response_window_clean_Right)
+
+(trackloss_clean_subjects_Right <- unique(trackloss_clean_Right[, c('subID','TracklossForParticipant')]))
+# mean trackloss
+(meanRightTrackloss <- mean(1-trackloss_clean_subjects_Right$TracklossForParticipant))
+sdRightTrackloss <- sd(1-trackloss_clean_subjects_Right$TracklossForParticipant)
+
+#----
+response_window_clean_Other <- clean_by_trackloss(data = response_window_Left,
+                                            participant_prop_thresh = .9)
+trackloss_clean_Other <- trackloss_analysis(data = response_window_clean_Other)
+
+(trackloss_clean_subjects_Other <- unique(trackloss_clean_Other[, c('subID','TracklossForParticipant')]))
+# mean trackloss
+meanOtherTrackloss <- mean(1-trackloss_clean_subjects_Other$TracklossForParticipant)
+sdOtherTrackloss <- sd(1-trackloss_clean_subjects_Other$TracklossForParticipant)
+
+
+```
+
+-----------
+
+## Window analysis
+
+```{r , echo=FALSE, fig.width=4}
+
+# create Target condition column
+response_window_clean_Left$Target <- as.factor( ifelse(response_window_clean_Left$left_Type==1, 
+                                                  yes = 'Left is XX', 
+                                                  no  = 'Left is XY') )
+response_window_clean_Right$Target <- as.factor( ifelse(response_window_clean_Right$right_Type==1, 
+                                                  yes = 'Right is XX', 
+                                                  no  = 'Right is XY') )
+response_window_clean_Other$Target <- as.factor( ifelse(response_window_clean_Other$left_Type==1, 
+                                                  yes = 'XX on Left', 
+                                                  no  = 'XX on Right') )
+
+
+# summarize left over window
+data_summary_Left <- describe_data(response_window_clean_Left, 
+                               describe_column='left', 
+                               group_columns=c('Target','subID'))
+plot(data_summary_Left)
+# summarize right over window
+data_summary_Right <- describe_data(response_window_clean_Right, 
+                               describe_column='right',
+                               group_columns=c('Target','subID'))
+plot(data_summary_Right)
+
+# summarize other for left looks
+data_summary_Other_Left <- describe_data(response_window_clean_Left, 
+                               describe_column='other',
+                               group_columns=c('Target','subID'))
+plot(data_summary_Other_Left)
+
+# summarize other for right looks
+data_summary_Other_Right <- describe_data(response_window_clean_Right, 
+                               describe_column='other',
+                               group_columns=c('Target','subID'))
+plot(data_summary_Other_Right)
+
+
+```
+
+
+
+---------- 
+
+### Do the ArcSin transform on the proportions and run stats  - t-test and hierarchical regression model
+
+```{r , echo=FALSE, fig.width=4}
+# # aggregate by subject across the response window
+# response_window_agg_by_subL <- make_time_window_data(response_window_clean_Left, 
+#                                              aois='left',
+#                                              predictor_columns=c('Target'),
+#                                              summarize_by = "subID")
+# 
+# plot(response_window_agg_by_subL, predictor_columns="Target", dv = "ArcSin")
+# 
+# 
+# # aggregate by subject across the response window
+# response_window_agg_by_subR <- make_time_window_data(response_window_clean_Right, 
+#                                              aois='right',
+#                                              predictor_columns=c('Target'),
+#                                              summarize_by = "subID")
+# 
+# plot(response_window_agg_by_subR, predictor_columns="Target", dv = "ArcSin")
+# 
+# #--- Left looks
+# # show condition means
+# describe_data(response_window_agg_by_subL, 
+#               describe_column = "ArcSin", 
+#               group_columns = "Target")
+# # simple paired t-test between conditions
+# t.test(ArcSin ~ Target, data= response_window_agg_by_subL, paired=TRUE)
+# 
+# 
+# #--- Right looks
+# # show condition means
+# describe_data(response_window_agg_by_subR, 
+#               describe_column = "ArcSin", 
+#               group_columns = "Target")
+# # simple paired t-test between conditions
+# t.test(ArcSin ~ Target, data= response_window_agg_by_subR, paired=TRUE)
+# 
+# 
+# 
+# ## Summarize by trial within participant
+# 
+# response_window_agg_Left <- make_time_window_data(response_window_clean_Left, 
+#                                              aois='left', 
+#                                              predictor_columns=c('Target'))
+# response_window_agg_Right <- make_time_window_data(response_window_clean_Right, 
+#                                              aois='right', 
+#                                              predictor_columns=c('Target'))
+# 
+# # mixed-effects linear model on subject*trial data
+# model_time_window_Left <- lmer(Elog ~ Target +  (1 | subID) + (1 | pair), 
+#                           data = response_window_agg_Left, REML = FALSE)
+# # cleanly show important parts of model (see `summary()` for more)
+# est_L <- model_time_window_Left
+# # # use model comparison to attain p-values
+# # drop1(model_time_window_Left,~.,test="Chi")
+# 
+# # mixed-effects linear model on subject*trial data
+# model_time_window_Right <- lmer(Elog ~ Target +  (1 | subID) + (1 | pair), 
+#                           data = response_window_agg_Right, REML = FALSE)
+# # cleanly show important parts of model (see `summary()` for more)
+# est_R <- model_time_window_Right
+# # # use model comparison to attain p-values
+# # drop1(model_time_window_Right,~.,test="Chi")
+# 
+# ## More parameters can be added here like Age, Gender etc
+
+```
+
+Both regression and t-test show the same result
+
+--------
+
+### Growth curve analysis
+
+Here we look at the trajectories of the timecourse of participant's looks to each stimulus type (XX vs. XY). These trajectories will be modeled as a hierarchical polynomial regression that takes both stimulus type and time into account, and treats participants and items as random effects. 
+
+Throughout our analyses, Left and right looks will be considered separately.
+
+Left looks:
+```{r , echo=FALSE, fig.width=4,  warnings = FALSE}
+# LEFT LOOKS - note, 1/10/2022, put the response_timeR make time sequence code right after the one for timeL,
+# so that when I do the loop to filter data by participant and na.spline / smooth it, I only have to do it in a single loop for both left and right data.
+
+# aggregate across trials within subjects in time analysis
+response_timeL <- make_time_sequence_data(response_window_clean_Left, 
+                                          time_bin_size = timeBin, 
+                                          predictor_columns = c("Target"),
+                                          aois = "left")
+# aggregate across trials within subjects in time analysis
+response_timeR <- make_time_sequence_data(response_window_clean_Right, 
+                                          time_bin_size = timeBin, 
+                                          predictor_columns = c("Target"),
+                                          aois = "right")
+
+
+
+
+# # generate dataframe summarizing values of each vector
+# timecodesL <- unique(response_timeL[, c('ot1','ot2','ot3','ot4','ot5','ot6')])
+# timecodesL$num <- 1:nrow(timecodesL)
+
+# sum-code and center our predictor:
+response_timeL$TargetC <- ifelse(response_timeL$Target == 'Left is XX', .5, -.5)
+response_timeL$TargetC <- as.numeric(scale(response_timeL$TargetC, 
+                                           center=TRUE, 
+                                           scale=FALSE))
+# timecodesR <- unique(response_timeR[, c('ot1','ot2','ot3','ot4','ot5','ot6')])
+# timecodesR$num <- 1:nrow(timecodesR)
+
+# sum-code and center our predictor:
+response_timeR$TargetC <- ifelse(response_timeR$Target == 'Right is XX', .5, -.5)
+response_timeR$TargetC <- as.numeric(scale(response_timeR$TargetC, 
+                                           center=TRUE, 
+                                           scale=FALSE))
+
+#Create dummy column, "Smoothed", and pre-populate it with zeros (will store smoothed data)
+response_timeL$smoothed <- 0
+response_timeR$smoothed <- 0
+
+# # smooth data
+participants <- unique(response_timeL$subID)
+
+# create a new, placeholder response dataset for left and right, to be populated in the loop with the smoothed NaN-free version. 
+response_timeL_new <- slice(response_timeL, 0) # left ; creates a new dataframe with same columns but 0 rows
+response_timeR_new <- slice(response_timeR, 0) # right
+sanity_counter = 0
+
+for(part in participants){
+  #filter response_time dataframes to include only rows for current participant
+  curr_frame_L <- response_timeL[response_timeL$subID == part,]
+  curr_frame_R <- response_timeR[response_timeR$subID == part,]
+  for(tr in unique(curr_frame_L$pair)){
+  curr_frame_Lt <- curr_frame_L[curr_frame_L$pair == tr,]
+  curr_frame_Rt <- curr_frame_R[curr_frame_R$pair == tr,]
+  
+
+  #Interpolate non-trailing NaNs in the trial's subset of data using na.spline
+  # NOTE: this code prevents extrapolation in na.spline, using strictly interpolation. As a result, we will later be able to simple remove any remaining trailing nans from the data without sacrificing real data.
+  len_Lt <- length(curr_frame_Lt$TimeBin)
+  len_Rt <- length(curr_frame_Rt$TimeBIn)
+  remove_missing_L <- na.spline(curr_frame_Lt$Prop) + 0*na.approx(curr_frame_Lt$Prop, na.rm = FALSE)
+  remove_missing_R <- na.spline(curr_frame_Rt$Prop) + 0*na.approx(curr_frame_Rt$Prop, na.rm = FALSE)
+  # fix data to prevent interpolation that exceeds bounds of a proportion (i.e. negative vals or vals exceeding 1)
+  remove_missing_L[remove_missing_L > 1] <- 1
+  remove_missing_L[remove_missing_L < 0] <- 0
+  remove_missing_R[remove_missing_R > 1] <- 1
+  remove_missing_R[remove_missing_R < 0] <- 0
+  
+   # # # Sanity check-- check if interpolation at this stage changes length of df (it shouldn't)
+  # if(len_Lt == length(remove_missing_L)){
+  # } else {
+  #   print(paste("participant", part, "trial", tr, "has changed length after interpolation"))
+  # }
+  
+  # put the interpolated data (which still contains trailing and leading NaNs) back into curr frame Prop
+  if(length(remove_missing_L) == 0 | length(remove_missing_L) == 0){ # if data for entire trial is empty
+    # don't put anything back into prop because there's nothing to put back.
+  } else {
+    curr_frame_Lt$Prop <- remove_missing_L 
+    curr_frame_Rt$Prop <- remove_missing_R  
+  }
+    
+
+  
+  # filter out trailing na's from curr_frame_Lt and Rt- this often WILL change the length of the df
+  curr_frame_Lt_trimmed <- curr_frame_Lt[!is.na(curr_frame_Lt$Prop) & !is.nan(curr_frame_Lt$Prop),]
+  curr_frame_Rt_trimmed <- curr_frame_Rt[!is.na(curr_frame_Rt$Prop) & !is.nan(curr_frame_Rt$Prop),]
+
+  
+  #smooth data for participant-trial using supsmu (based on Friedman's Super Smoother)
+  # curr_frame_Lt_trimmed$smoothed <- supsmu(curr_frame_Lt_trimmed$TimeBin, curr_frame_Lt_trimmed$Prop, span = 0.05)$y
+  # curr_frame_Rt_trimmed$smoothed <- supsmu(curr_frame_Rt_trimmed$TimeBin, curr_frame_Rt_trimmed$Prop, span = 0.05)$y
+  if(nrow(curr_frame_Lt_trimmed)<4){
+    curr_frame_Lt_trimmed$smoothed <- curr_frame_Lt_trimmed$Prop #if only one data point, just use raw prop
+  } else {
+    curr_frame_Lt_trimmed$smoothed <- smooth.spline(curr_frame_Lt_trimmed$TimeBin, curr_frame_Lt_trimmed$Prop)$y
+    curr_frame_Rt_trimmed$smoothed <- smooth.spline(curr_frame_Rt_trimmed$TimeBin, curr_frame_Rt_trimmed$Prop)$y
+  }
+  
+  #build new response_timeL as a concatenation with the new dataframe built thus far plus the most recent trial's worth   of smoothed, trimmed, interpolated data.
+  response_timeL_new <- bind_rows(response_timeL_new, curr_frame_Lt_trimmed)
+  response_timeR_new <- bind_rows(response_timeR_new, curr_frame_Rt_trimmed)
+  summary(response_timeL_new)
+  sanity_counter <- sanity_counter + nrow(curr_frame_Lt_trimmed)
+  }
+}
+
+
+
+# 
+# # Construct mixed effects polynomial logistic regression model.
+# # model_time_sequenceL <- lmer(Elog ~ TargetC*(ot1) +  (1 | pair) + (1 | subID), data = response_timeL, REML = FALSE)
+# # model_time_sequenceL <- lmer(Elog ~ TargetC*(ot1 + ot2 + ot3 + ot4 + ot5 + ot6 ) + (1 | pair) + (1 | subID), data = response_timeL, REML = FALSE)
+# model_time_sequenceL <- lmer(Prop ~ TargetC*(ot1 + ot2 + ot3 + ot4 + ot5 + ot6 ) + (1 | trial) + (1 | subID), data = response_timeL, REML = FALSE)
+# # use model comparison to attain p-values
+# # drop1(model_time_sequenceL,~.,test="Chi")
+# 
+# # cleanly show important parts of model (see `summary()` for more)
+# model_time_sequenceL
+# summary(model_time_sequenceL)
+# 
+# # GENERATE FIGURES
+# # jpeg(paste0("C:/Users/qathy/Desktop/Matlab_and_R/analysis_files/left_looks_", 
+# #             prettyName, ".jpeg"))
+# 
+# plot(response_timeL, 
+#      predictor_column = "Target", 
+#      dv = "Prop", 
+#      model = model_time_sequenceL, 
+#      ann = FALSE) + theme_light() + ylab("left looks (Prop)") + coord_cartesian(ylim = c(0, 1))
+# 
+# 
+# # dev.off()
+# visualize time results
+plot(response_timeL, 
+     predictor_column = "Target") + 
+  theme_light() + ylab("left looks (Prop)") +
+  coord_cartesian(ylim = c(0,1))
+
+```
+Right Looks:
+
+```{r , echo=FALSE, fig.width=4,  warnings = FALSE}
+# RIGHT LOOKS
+
+# # aggregate across trials within subjects in time analysis
+# response_timeR <- make_time_sequence_data(response_window_clean_Right, 
+#                                           time_bin_size = timeBin, 
+#                                           predictor_columns = c("Target"),
+#                                           aois = "right")
+# visualize time results
+plot(response_timeR, predictor_column = "Target") + 
+  theme_light() + ylab("right looks (Prop)")  +
+  coord_cartesian(ylim = c(0,1))
+
+
+
+ 
+# generate dataframe summarizing values of each vector
+# timecodesR <- unique(response_timeR[, c('ot1','ot2')])
+# timecodesR <- unique(response_timeR[, c('ot1','ot2','ot3','ot4','ot5','ot6')])
+# timecodesR$num <- 1:nrow(timecodesR)
+ 
+
+
+# # sum-code and center our predictor:
+# response_timeR$TargetC <- ifelse(response_timeR$Target == 'Right is XX', .5, -.5)
+# response_timeR$TargetC <- as.numeric(scale(response_timeR$TargetC, 
+#                                            center=TRUE, 
+#                                            scale=FALSE))
+
+# # RIGHT LOOKS---
+# # Construct model
+# # model_time_sequenceR <- lmer(Elog ~ TargetC*(ot1) +  (1 | pair) + (1 | subID), data = response_timeR, REML = FALSE)
+# # model_time_sequenceR <- lmer(Elog ~ TargetC*(ot1 + ot2 + ot3 + ot4 + ot5 + ot6) + (1 | pair) + (1 | subID), data = response_timeR, REML = FALSE)
+# model_time_sequenceR <- lmer(Prop ~ TargetC*(ot1 + ot2 + ot3 + ot4 + ot5 + ot6) + (1 | trial) + (1 | subID), data = response_timeR, REML = FALSE)
+# # use model comparison to attain p-values
+# # drop1(model_time_sequenceR,~.,test="Chi")
+# 
+# # cleanly show important parts of model (see `summary()` for more)
+# model_time_sequenceR
+# summary(model_time_sequenceR)
+# 
+# 
+# 
+# # jpeg(paste0("C:/Users/qathy/Desktop/Matlab_and_R/analysis_files/right_looks_",
+# #             prettyName, ".jpeg"))
+# plot(response_timeR, 
+#      predictor_column = "Target", 
+#      dv = "Prop", 
+#      model = model_time_sequenceR, 
+#      ann = FALSE) + theme_light() + ylab("right looks (Prop)") + coord_cartesian(ylim = c(0, 1))
+# 
+# # dev.off()
+
+
+```
+Other looks:
+```{r , echo=FALSE, fig.width=4,  warnings = FALSE}
+# # LEFT LOOKS
+# 
+# # aggregate across trials within subjects in time analysis
+# response_timeO <- make_time_sequence_data(response_window_clean_Other, 
+#                                           time_bin_size = timeBin, 
+#                                           predictor_columns = c("Target"),
+#                                           aois = "other")
+# # visualize time results
+# plot(response_timeO, 
+#      predictor_column = "Target") + 
+#   theme_light() + ylab("other looks (Prop)") +
+#   coord_cartesian(ylim = c(0,1))
+# 
+# # generate dataframe summarizing values of each vector
+# # timecodesL <- unique(response_timeL[, c('ot1','ot2')])
+# timecodesO <- unique(response_timeO[, c('ot1','ot2','ot3','ot4','ot5','ot6')])
+# timecodesO$num <- 1:nrow(timecodesO)
+# 
+# # sum-code and center our predictor:
+# response_timeO$TargetC <- ifelse(response_timeO$Target == 'XX on Left', .5, -.5)
+# response_timeO$TargetC <- as.numeric(scale(response_timeO$TargetC, 
+#                                            center=TRUE, 
+#                                            scale=FALSE))
+# # Construct mixed effects polynomial logistic regression model.
+# # model_time_sequenceL <- lmer(Elog ~ TargetC*(ot1) +  (1 | pair) + (1 | subID), data = response_timeL, REML = FALSE)
+# # model_time_sequenceL <- lmer(Elog ~ TargetC*(ot1 + ot2 + ot3 + ot4 + ot5 + ot6 ) + (1 | pair) + (1 | subID), data = response_timeL, REML = FALSE)
+# model_time_sequenceO <- lmer(Prop ~ TargetC*(ot1 + ot2 + ot3 + ot4 + ot5 + ot6 ) + (1 | trial) + (1 | subID), data = response_timeO, REML = FALSE)
+# # use model comparison to attain p-values
+# # drop1(model_time_sequenceL,~.,test="Chi")
+# 
+# # cleanly show important parts of model (see `summary()` for more)
+# model_time_sequenceO
+# summary(model_time_sequenceO)
+# 
+# # GENERATE FIGURES
+# # jpeg(paste0("C:/Users/qathy/Desktop/Matlab_and_R/analysis_files/left_looks_", 
+# #             prettyName, ".jpeg"))
+# 
+# plot(response_timeO, 
+#      predictor_column = "Target", 
+#      dv = "Prop", 
+#      model = model_time_sequenceO, 
+#      ann = FALSE) + theme_light() + ylab("other looks (Prop)") + coord_cartesian(ylim = c(0, 1))
+# 
+# # dev.off()
+
+```
+
+## Divergence analysis
+"In this analysis, we want to determine when a predictor had a significant effect during a trial. Growth curve analyses tell us the trajectory of our effect over the course of the trial, but that approach does not allow us to ask: What is the onset of some predictor’s effect, and how long does the effect last? 
+
+One straightforward method of testing for divergences is simply to perform a statistical test (such as a t test) on each time-bin separately."
+
+We can compute a t-test of the mean differences between XX and XY (delta XX-XY) at each time bin. As in a normal t test, this can be done separately by participants and by items. The Holm method is used to control for the family-wise error rate.
+
+
+Left looks (using participant means at each time point):
+
+```{r , echo=FALSE, fig.width=4,  warnings = FALSE}
+#----LEFT LOOKS
+# # GENERATE SUBJECT LEVEL MEANS
+# # aggregate across trials within subjects in time analysis
+# response_timeL_subs <- make_time_sequence_data(response_window_clean_Left, 
+#                                           time_bin_size = timeBin,
+#                                           predictor_columns = c("Target"),
+#                                           aois = "left",
+#                                           summarize_by = "subID"
+# )
+# # conduct t tests, XX - XY, at each time bin
+# tb_analysisL_subs <- analyze_time_bins(data = response_timeL_subs, 
+#                                   predictor_column = "Target", 
+#                                   test = "t.test", 
+#                                   alpha = .05, 
+#                                   p_adjust_method = "none")
+# 
+# # GENERATE DIVERGENCE FIGURES
+# # jpeg(paste0("C:/Users/qathy/Desktop/Matlab_and_R/analysis_files/t test DIFFS_left_", 
+# #             prettyName, ".jpeg"))
+# plot(tb_analysisL_subs, 
+#      type = "estimate") + theme_light() + ylab("T value of the difference (XX-XY)")
+# summary(tb_analysisL_subs)
+# # dev.off()
+```
+Left looks (using item means at each time point)
+
+```{r , echo=FALSE, fig.width=4,  warnings = FALSE}
+#----LEFT LOOKS
+# # GENERATE SUBJECT LEVEL MEANS
+# # aggregate across trials within subjects in time analysis
+# response_timeL_items <- make_time_sequence_data(response_window_clean_Left, 
+#                                           time_bin_size = timeBin,
+#                                           predictor_columns = c("Target"),
+#                                           aois = "left",
+#                                           summarize_by = "pair"
+# )
+# # conduct t tests, XX - XY, at each time bin
+# tb_analysisL_items <- analyze_time_bins(data = response_timeL_items, 
+#                                   predictor_column = "Target", 
+#                                   test = "t.test", 
+#                                   alpha = .05, 
+#                                   p_adjust_method = "none")
+# 
+# # GENERATE DIVERGENCE FIGURES
+# # jpeg(paste0("C:/Users/qathy/Desktop/Matlab_and_R/analysis_files/t test DIFFS_left_", 
+# #             prettyName, ".jpeg"))
+# plot(tb_analysisL_items, 
+#      type = "estimate") + theme_light() + ylab("T value of the difference (XX-XY)")
+# summary(tb_analysisL_items)
+# # dev.off()
+```
+
+Left looks (mixed effects modelling at each time point)
+
+```{r , echo=FALSE, fig.width=4,  fig.height = 4, warnings = FALSE}
+#----LEFT LOOKS
+# GENERATE SUBJECT LEVEL MEANS
+# aggregate across trials within subjects in time analysis
+# response_timeL_all <- make_time_sequence_data(response_window_clean_Left, 
+#                                           time_bin_size = timeBin,
+#                                           predictor_columns = c("Target"),
+#                                           aois = "left"
+# )
+# conduct mixed effects model, XX - XY, at each time bin - raw proportions
+tb_analysisL_all <- analyze_time_bins(data = response_timeL, 
+                                  predictor_column = "TargetC", 
+                                  test = "lmer", 
+                                  alpha = .05, 
+                                  formula = "Prop ~ TargetC + (1 | trial) + (1 | subID)",
+                                  p_adjust_method = "none")
+
+#same analysis using proportions where missing data have been interpolated using na.spline
+tb_analysisL_interp <- analyze_time_bins(data = response_timeL_new,
+                                         predictor_column = "TargetC",
+                                         test = "lmer",
+                                         alpha = .05, 
+                                         formula = "Prop ~ TargetC + (1 | trial) + (1 | subID)",
+                                         p_adjust_method = "none")
+
+#same analysis using smoothed proportions, which were smoothed using Friedman's Super Smoother
+tb_analysisL_smooth <- analyze_time_bins(data = response_timeL_new,
+                                         predictor_column = "TargetC",
+                                         test = "lmer",
+                                         alpha = .05, 
+                                         formula = "smoothed ~ TargetC + (1 | trial) + (1 | subID)",
+                                         p_adjust_method = "none")
+
+# GENERATE DIVERGENCE FIGURES
+# jpeg(paste0("C:/Users/qathy/Desktop/Matlab_and_R/analysis_files/t test DIFFS_left_", 
+#             prettyName, ".jpeg"))
+plot(tb_analysisL_all, 
+     type = "estimate") + theme_light() + ylab("lmer model  difference (XX-XY)") + coord_cartesian(ylim = c(-.09, .125))
+summary(tb_analysisL_all)
+
+plot(tb_analysisL_interp, 
+     type = "estimate") + theme_light() + ylab("lmer model  difference (XX-XY)") + coord_cartesian(ylim = c(-.09, .125))
+summary(tb_analysisL_interp)
+
+jpeg(file = paste0("C:/Users/qathy/OneDrive/Documents/Matlab_and_R/analysis_files/results from big analysis/ME_divergence_left_", 
+                   prettyName, ".jpeg"),
+     width = 4, # The width of the plot in inches
+     height = 4) # The height of the plot in inches
+
+
+plot(tb_analysisL_smooth, 
+     type = "estimate") + theme_light() + ylab("lmer model  difference (XX-XY)") + coord_cartesian(ylim = c(-.09, .125))
+dev.off()
+
+summary(tb_analysisL_smooth)
+
+```
+Right looks (using participant means at each time point):
+
+```{r , echo=FALSE, fig.width=4,  warnings = FALSE}
+#----RIGHT LOOKS
+# GENERATE SUBJECT LEVEL MEANS
+# aggregate across trials within subjects in time analysis
+# response_timeR_subs <- make_time_sequence_data(response_window_clean_Right, 
+#                                           time_bin_size = timeBin,
+#                                           predictor_columns = c("Target"),
+#                                           aois = "right",
+#                                           summarize_by = "subID")
+# # conduct t tests, XX - XY, at each time bin
+# tb_analysisR_subs <- analyze_time_bins(data = response_timeR_subs, 
+#                                   predictor_column = "Target", 
+#                                   test = "t.test", 
+#                                   alpha = .05,
+#                                   p_adjust_method = "none")
+# 
+# # GENERATE DIVERGENCE FIGURES
+# # jpeg(paste0("C:/Users/qathy/Desktop/Matlab_and_R/analysis_files/t test DIFFS_right_", 
+# #             prettyName, ".jpeg"))
+# plot(tb_analysisR_subs, type = "estimate") + theme_light() + ylab("T value of the difference (XX-XY)")
+# summary(tb_analysisR_subs)
+# # dev.off()
+# 
+# num_time_bins <- nrow(tb_analysisR_subs)
+
+```
+Right looks (using item means at each time point)
+
+```{r , echo=FALSE, fig.width=4,  warnings = FALSE}
+# #----RIGHT LOOKS
+# # GENERATE SUBJECT LEVEL MEANS
+# # aggregate across trials within subjects in time analysis
+# response_timeR_items <- make_time_sequence_data(response_window_clean_Right, 
+#                                           time_bin_size = timeBin,
+#                                           predictor_columns = c("Target"),
+#                                           aois = "right",
+#                                           summarize_by = "pair")
+# # conduct t tests, XX - XY, at each time bin
+# tb_analysisR_items <- analyze_time_bins(data = response_timeR_items, 
+#                                   predictor_column = "Target", 
+#                                   test = "t.test", 
+#                                   alpha = .05,
+#                                   p_adjust_method = "none")
+# 
+# # GENERATE DIVERGENCE FIGURES
+# # jpeg(paste0("C:/Users/qathy/Desktop/Matlab_and_R/analysis_files/t test DIFFS_right_", 
+# #             prettyName, ".jpeg"))
+# plot(tb_analysisR_items, type = "estimate") + theme_light() + ylab("T value")
+# summary(tb_analysisR_items)
+# # dev.off()
+# 
+# num_time_bins <- nrow(tb_analysisR_items)
+
+```
+Right looks (mixed effects modelling at each time point)
+
+```{r , echo=FALSE, fig.width=4,  warnings = FALSE}
+#----LEFT LOOKS
+# GENERATE SUBJECT LEVEL MEANS
+# aggregate across trials within subjects in time analysis
+# response_timeR_all <- make_time_sequence_data(response_window_clean_Right, 
+#                                           time_bin_size = timeBin,
+#                                           predictor_columns = c("Target"),
+#                                           aois = "right"
+# )
+# conduct t tests, XX - XY, at each time bin
+tb_analysisR_all <- analyze_time_bins(data = response_timeR, 
+                                  predictor_column = "TargetC", 
+                                  test = "lmer", 
+                                  alpha = .05, 
+                                  formula = "Prop ~ TargetC + (1 | trial) + (1 | subID)",
+                                  p_adjust_method = "none")
+
+#same analysis using proportions where missing data have been interpolated using na.spline
+tb_analysisR_interp <- analyze_time_bins(data = response_timeR_new,
+                                         predictor_column = "TargetC",
+                                         test = "lmer",
+                                         alpha = .05, 
+                                         formula = "Prop ~ TargetC + (1 | trial) + (1 | subID)",
+                                         p_adjust_method = "none")
+
+#same analysis using smoothed proportions, which were smoothed using Friedman's Super Smoother
+tb_analysisR_smooth <- analyze_time_bins(data = response_timeR_new,
+                                         predictor_column = "TargetC",
+                                         test = "lmer",
+                                         alpha = .05, 
+                                         formula = "smoothed ~ TargetC + (1 | trial) + (1 | subID)",
+                                         p_adjust_method = "none")
+# GENERATE DIVERGENCE FIGURES
+# jpeg(paste0("C:/Users/qathy/Desktop/Matlab_and_R/analysis_files/t test DIFFS_left_", 
+#             prettyName, ".jpeg"))
+plot(tb_analysisR_all, 
+     type = "estimate") + theme_light() + ylab("lmer model difference (XX-XY)") + coord_cartesian(ylim = c(-.09, .125))
+summary(tb_analysisR_all)
+
+plot(tb_analysisR_interp, 
+     type = "estimate") + theme_light() + ylab("lmer model  difference (XX-XY)") + coord_cartesian(ylim = c(-.09, .125))
+summary(tb_analysisR_interp)
+
+plot(tb_analysisR_smooth, 
+     type = "estimate") + theme_light() + ylab("lmer model  difference (XX-XY)") + coord_cartesian(ylim = c(-.09, .125))
+summary(tb_analysisR_smooth)
+
+# dev.off()
+```
+## Divergence analysis - Bootstrapped smoothed divergence analysis
+"However, this method does not control the family-wise error rate–that is, the probability of finding at least one divergence across conditions where none actually exists. Because we are performing so many tests, we are bound to get some statistically significant results, even if no effect is actually present.
+
+One concern with multiple-testing using corrections is that it severely limits our power: by controlling the family-wise error rate, we sacrifice our ability to detect effects when they are present.
+
+One approach is to perform a statistical test that operates over a smoothed version of our data (similar to Wendt et al., 2014). This involves:
+
+1. Resampling with replacement from our data (e.g., randomly resampling subjects from each condition).
+2. For each resample, fitting a smoothing curve to the data (choosing either smooth.spline(), loess(), or no smoother)
+3. Repeating steps (1) and (2) thousands of times to generate a distribution,
+4. Obtain the 95% confidence intervals of this distribution. Those time-bins whose confidence intervals do not overlap with zero can be considered statistically significant at alpha = .05.
+
+This is a useful technique for estimating the timepoints of divergence between two conditions, while the smoothing helps remove minor deviations that might disrupt what would otherwise be considered a single divergent period. This can be especially helpful in infant data, which can be extremely noisy. Note that this approach can only deal with testing differences across two levels of a predictor (e.g., an experimental manipulation, not a continous covariate).
+
+This method returns a list of divergences between your two conditions based on time windows in which (by default) the 95% confidence intervals did not include 0 (i.e., p < .05)."
+
+
+Left looks (bootstrap of the difference between the means, by participants):
+
+```{r , echo=FALSE, fig.width=4,  warnings = FALSE}
+# tb_bootstrapL_subs <- analyze_time_bins(response_timeL_subs, 
+#                                    predictor_column = 'Target', 
+#                                    test= 'boot_splines',
+#                                    within_subj = TRUE, 
+#                                    bs_samples = 1000, 
+#                                    alpha = .05)
+# 
+# plot(tb_bootstrapL_subs) + theme_light() + ylab("left looks - bootstrap mean difference")
+# summary(tb_bootstrapL_subs)
+
+
+```
+Left looks (bootstrap of the difference between the means, by items):
+
+# ```{r , echo=FALSE, fig.width=4,  warnings = FALSE}
+# tb_bootstrapL_items <- analyze_time_bins(response_timeL_items, 
+#                                    predictor_column = 'Target', 
+#                                    test= 'boot_splines',
+#                                    within_subj = FALSE, 
+#                                    bs_samples = 1000, 
+#                                    alpha = .05)
+# 
+# plot(tb_bootstrapL_items) + theme_light() + ylab("left looks - bootstrap mean difference")
+# summary(tb_bootstrapL_items)
+# 
+# 
+# ```
+
+Right looks (bootstrap of the difference between the means, by participants):
+
+```{r , echo=FALSE, fig.width=4,  warnings = FALSE}
+
+# 
+# 
+# tb_bootstrapR_subs <- analyze_time_bins(response_timeR_subs, 
+#                                    predictor_column = 'Target', 
+#                                    test= 'boot_splines',
+#                                    within_subj = TRUE, 
+#                                    bs_samples = 1000, 
+#                                    alpha = .05)
+# 
+# plot(tb_bootstrapR_subs) + theme_light() + ylab("right looks - bootstrap mean difference")
+# summary(tb_bootstrapR_subs)
+
+```
+Right looks (bootstrap of the difference between the means, by items):
+
+```{r , echo=FALSE, fig.width=4,  warnings = FALSE}
+# 
+# 
+# 
+# tb_bootstrapR_items <- analyze_time_bins(response_timeR_items, 
+#                                    predictor_column = 'Target', 
+#                                    test= 'boot_splines',
+#                                    within_subj = FALSE, 
+#                                    bs_samples = 1000, 
+#                                    alpha = .05)
+# 
+# plot(tb_bootstrapR_items) + theme_light() + ylab("right looks - bootstrap mean difference")
+# summary(tb_bootstrapR_items)
+
+```
+
+Testing with Bonferroni correction
+
+"However, it is important to note that this method doesn’t explicitly control the family-wise error rate. And unfortunately, because this test doesn’t produce a p-value for each bin, we can only perform a (manual) Bonferroni-correction."
+
+
+Left looks (bootstrap, bonferroni-corrected, by participants):
+
+```{r , echo=TRUE, fig.width=4,  warnings = FALSE}
+
+
+
+
+# tb_bootstrap_bonfL_subs <- analyze_time_bins(response_timeL_subs, 
+#                                         predictor_column = 'Target', 
+#                                         test= 'boot_splines',
+#                                         within_subj = TRUE, 
+#                                         alpha = .05/num_time_bins)
+# # jpeg(paste0("C:/Users/qathy/Desktop/Matlab_and_R/analysis_files/boot_bonferroni_Left_", 
+# #             prettyName, ".jpeg"))
+# plot(tb_bootstrap_bonfL_subs) + theme_light() + ylab("Left looks - Delta XX-XY")
+# # dev.off()
+# summary(tb_bootstrap_bonfL_subs)
+
+```
+Left looks (bootstrap, bonferroni-corrected, by items):
+
+<!-- ```{r , echo=TRUE, fig.width=4,  warnings = FALSE} -->
+
+
+
+
+<!-- tb_bootstrap_bonfL_items <- analyze_time_bins(response_timeL_items,  -->
+<!--                                         predictor_column = 'Target',  -->
+<!--                                         test= 'boot_splines', -->
+<!--                                         within_subj = FALSE,  -->
+<!--                                         alpha = .05/num_time_bins) -->
+<!-- # jpeg(paste0("C:/Users/qathy/Desktop/Matlab_and_R/analysis_files/boot_bonferroni_Left_",  -->
+<!-- #             prettyName, ".jpeg")) -->
+<!-- plot(tb_bootstrap_bonfL_items) + theme_light() + ylab("Left looks - Delta XX-XY") -->
+<!-- # dev.off() -->
+<!-- summary(tb_bootstrap_bonfL_items) -->
+
+<!-- ``` -->
+Right looks (bootstrap, bonferroni-corrected, by participants):
+
+```{r , echo=TRUE, fig.width=4,  warnings = FALSE}
+# 
+# 
+# 
+# tb_bootstrap_bonfR_subs <- analyze_time_bins(response_timeR_subs, 
+#                                         predictor_column = 'Target', 
+#                                         test= 'boot_splines',
+#                                         within_subj = TRUE, 
+#                                         alpha = .05/num_time_bins)
+# # jpeg(paste0("C:/Users/qathy/Desktop/Matlab_and_R/analysis_files/boot_bonferroni_Right_", 
+# #             prettyName, ".jpeg"))
+# plot(tb_bootstrap_bonfR_subs) + theme_light() + ylab("Right looks - Delta XX-XY")
+# # dev.off()
+# summary(tb_bootstrap_bonfR_subs)
+
+
+```
+Right looks (bootstrap, bonferroni-corrected, by items):
+
+<!-- ```{r , echo=TRUE, fig.width=4,  warnings = FALSE} -->
+
+
+
+<!-- tb_bootstrap_bonfR_items <- analyze_time_bins(response_timeR_items,  -->
+<!--                                         predictor_column = 'Target',  -->
+<!--                                         test= 'boot_splines', -->
+<!--                                         within_subj = FALSE,  -->
+<!--                                         alpha = .05/num_time_bins) -->
+<!-- # jpeg(paste0("C:/Users/qathy/Desktop/Matlab_and_R/analysis_files/boot_bonferroni_Right_",  -->
+<!-- #             prettyName, ".jpeg")) -->
+<!-- plot(tb_bootstrap_bonfR_items) + theme_light() + ylab("Right looks - Delta XX-XY") -->
+<!-- # dev.off() -->
+<!-- summary(tb_bootstrap_bonfR_items) -->
+
+
+<!-- ``` -->
+
+"Once correcting, the test suffers from many of the same problems as the Bonferroni t-tests."
+
+"Bootstrapped cluster-based permutation analysis
+
+Above we saw problems both with false-alarms and sensitivity. This is not a zero-sum game. One approach that offers an excellent compromise between the two is referred to as a cluster-based permutation analysis (Maris & Oostenveld, 2007).
+
+This procedure involves two main steps. First, we run a test on each time bin that quantifies the statistical significance of the effect at each time bin. This acts as a “first pass,” and we group together into clusters all adjacent bins that get through this first pass. We then shuffle the data, performing this test-then-cluster on each iteration of the shuffled data. This shuffled data tells us what kinds of clusters we should expect if there were no effect (i.e., randomly scrambled data).
+
+In more detail, what eyetrackingR does is:
+
+1. Run a statistical test on each time-bin of your data. This can be any valid and appropriate statistic test that quantifies the probability of the effect: t-test, wilcox.test, linear models, etc.– whatever is appropriate for your data.
+2. Take the time-bins whose test passed the threshold statistic (e.g., t > 2), and group them by adjacency. We will call these time-clusters.
+3. For each time-cluster, calculate the sum of the statistics for the time-bins inside it.
+4. Take the data and randomly shuffle it.
+5. Perform (1)-(3) on the shuffled dataset. Save the biggest sum-statistic.
+6. Repeat steps (4) and (5) hundreds of times. This will lead to a distribution of summed-statistics, each representing the results of a statistical test on shuffled data. Intuitively, this distribution represents what kind of sum-statistics we would expect to get by chance, if no effect were present (i.e., if the data were just randomly shuffled).
+7. Compare the cluster-statistics from step (3) to the distribution found in (6) to obtain a p-value. So, for example, if we get a distribution of sum-statistics, and 6.4% of the sum-statistics in this distribution are more extreme the sum-statistic of our cluster, then our p-value for this cluster is p = .064.
+
+This analysis has two main advantages over the ones reviewed so far:
+
+It naturally controls the false-alarm rate while sacrificing little sensitivity.
+The implementation in eyetrackingR allows you to use this method with a variety of statistical techniques (t.test, wilcox.test, (g)lm, and (g)lmer), so that continuous predictors, covariates, etc. can also be included in the model being tested. We even provide (experimental) support for using boot-splines as the test performed at each time bin.
+To perform this analysis, we first need to set a threshold for our “first pass,” for which time-bins will be included in clusters. This can be a source of misconceptions. The size of the initial threshold you set should be set in a principled way (e.g., don’t run the cluster analysis, examine the result, then decide you want to use a different threshold). But perhaps surprisingly, the test controls the family-wise error rate, even if we don’t choose a threshold that corresponds to p = .05. This is because the threshold affects both the first pass and the shuffled data: if we let more time-bins into our intial clusters, then more time-bins will be let into our shuffled data as well, and bigger time-clusters will be expected under the null distribution."
+
+"First we will pick a threshold t based on alpha = .05 two tailed."
+
+```{r , echo=TRUE, fig.width=4,  warnings = FALSE}
+num_sub = length(unique((response_window_clean_Left$subID)))
+threshold_t_Left = matrix(0, 50, 1)
+threshold_t_Right = matrix(0, 50, 1)
+# threshold_t = qt(p = 1 - .05/2,
+library("lmerTest")
+for (tl in c(0:49)){
+# left_words_Model <- lmer(Prop ~ TargetC + (1 | pair) + (1 | subID), data = response_timeL, REML = FALSE)
+left_words_Model <- lmer(smoothed ~ TargetC + (1 | pair) + (1 | subID), data = response_timeL_new[response_timeL_new$TimeBin == (tl),], REML = FALSE)
+# extract df for desired effect
+c_Left <- coef(summary(left_words_Model, ddf = "Satterthwaite"))
+df_Left <- c_Left[2, 3] # extract third column (df column), second row (TargetC effect)
+# threshold_t = qt(p = 1 - .05/2,
+#                  df = num_sub - 1) # pick threshold t based on alpha = .05 two tailed.
+threshold_t_Left[tl+1,1] = qt(p = 1 - .05/2,
+                 df = df_Left) # pick threshold t based on alpha = .05 two tailed.
+
+# right_words_Model <- lmer(Prop ~ TargetC + (1 | pair) + (1 | subID), data = response_timeR, REML = FALSE)
+right_words_Model <- lmer(smoothed ~ TargetC + (1 | pair) + (1 | subID), data = response_timeR_new[response_timeR_new$TimeBin == (tl),], REML = FALSE)
+# extract df for desired effect
+c_Right <- coef(summary(right_words_Model, ddf = "Satterthwaite"))
+df_Right <- c_Right[2, 3] # extract third column (df column), second row (TargetC effect)
+# threshold_t = qt(p = 1 - .05/2,
+#                  df = num_sub - 1) # pick threshold t based on alpha = .05 two tailed.
+threshold_t_Right[tl+1,1] = qt(p = 1 - .05/2,
+                 df = df_Right) # pick threshold t based on alpha = .05 two tailed.
+}
+```
+
+"We can then look for initial clusters:"
+
+Left Looks:
+```{r , echo=TRUE, fig.width=4,  warnings = FALSE}
+df_timeclustL <- make_time_cluster_data(response_timeL_new,
+                                        predictor_column = 'TargetC',
+                                        test = "lmer",
+                                        threshold = max(threshold_t_Left),
+                                        formula = "smoothed ~ TargetC + (1 | trial) + (1 | subID)")
+plot(df_timeclustL) + ylab("lmer statistic, XX-XY") + theme_light()
+summary(df_timeclustL)
+
+```
+Right Looks:
+```{r , echo=TRUE, fig.width=3,  warnings = FALSE}
+df_timeclustR <- make_time_cluster_data(response_timeR_new,
+                                        predictor_column = 'TargetC',
+                                        test = "lmer",
+                                        threshold = max(threshold_t_Right),
+                                        formula = "smoothed ~ TargetC + (1 | trial) + (1 | subID)")
+plot(df_timeclustR) + ylab("lmer statistic, XX-XY") + theme_light()
+summary(df_timeclustR)
+
+```
+
+Next, we will calculate the null distribution for our data, i.e. clusters we would expect to happen by chance. We can approximate this by shuffling our data, observing the size of the clusters that result, and then doing that again and again and again. Then, we compare the distribution of cluster sizes obtained from that process with our experimental data, to see the likelihood of getting similar data given that null distribution.
+
+Left:
+```{r , echo=TRUE, fig.width=4,  warnings = FALSE}
+clust_analysisL <- analyze_time_clusters(df_timeclustL,
+                                         within_subj=TRUE,
+                                         formula = "smoothed ~ TargetC + (1 | trial) + (1 | subID)",
+                                         shuffle_by = 'Target',
+                                         quiet = TRUE,
+                                         samples=1000)
+plot(clust_analysisL) + theme_light()
+summary(clust_analysisL)
+```
+Right:
+
+```{r , echo=TRUE, fig.width=4,  warnings = FALSE}
+clust_analysisR <- analyze_time_clusters(df_timeclustR,
+                                         within_subj=TRUE,
+                                         formula = "smoothed ~ TargetC + (1 | trial) + (1 | subID)",
+                                         shuffle_by = 'Target',
+                                         quiet = TRUE,
+                                         samples=1000)
+plot(clust_analysisR) + theme_light()
+summary(clust_analysisR)
+```
+
+"How can we interpret these results?
+
+The probabilities listed above tell us the probability of seeing the effect of each cluster (or bigger) by chance.
+
+References
+Maris, E., Oostenveld, R., (2007). Nonparametric statistical testing of EEG- and MEG-data. Journal of Neuroscience Methods 164 (1), 177–190.
+
+Wendt, D., Brand, T., & Kollmeier, B. (2014). An Eye-Tracking Paradigm for Analyzing the Processing Time of Sentences with Different Linguistic Complexities. PLoS ONE, 9(6), e100186. http://doi.org/10.1371/journal.pone.0100186.t003
